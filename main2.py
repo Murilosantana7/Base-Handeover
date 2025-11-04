@@ -86,6 +86,7 @@ async def main():
 
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
             await page.wait_for_timeout(20000)
+            await page.get_by_text("Exportar tarefa").click()
 
             async with page.expect_download() as download_info:
                 await page.get_by_role("button", name="Baixar").nth(0).click()
