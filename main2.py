@@ -100,14 +100,14 @@ async def main():
         try:
             # LOGIN
             await page.goto("https://spx.shopee.com.br/")
-            await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=15000)
+            await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=8000)
             await page.locator('xpath=//*[@placeholder="Ops ID"]').fill('Ops134294')
             await page.locator('xpath=//*[@placeholder="Senha"]').fill('@Shopee123')
             await page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button').click()
-            await page.wait_for_load_state("networkidle", timeout=20000)
+            await page.wait_for_load_state("networkidle", timeout=15000)
 
             try:
-                await page.locator('.ssc-dialog-close').click(timeout=10000)
+                await page.locator('.ssc-dialog-close').click(timeout=8000)
             except:
                 print("Nenhum pop-up foi encontrado.")
                 await page.keyboard.press("Escape")
@@ -115,17 +115,17 @@ async def main():
             # ================== DOWNLOAD 1: PENDING ==================
             print("\nIniciando Download: Base Pending")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-            await page.wait_for_timeout(15000)
+            await page.wait_for_timeout(10000)
 
             # Garante que está no filtro padrão (Pending) ou clica nele se necessário
             # Se quiser clicar explicitamente, descomente a linha abaixo:
             # await page.locator('xpath=SEU_XPATH_PARA_PENDING_AQUI').click()
 
             await page.get_by_role("button", name="Exportar").nth(0).click()
-            await page.wait_for_timeout(15000)
+            await page.wait_for_timeout(12000)
 
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
-            await page.wait_for_timeout(20000)
+            await page.wait_for_timeout(15000)
             await page.get_by_text("Exportar tarefa").click()
 
             async with page.expect_download(timeout=60000) as download_info:
@@ -151,7 +151,7 @@ async def main():
             await page.wait_for_timeout(10000)
 
             await page.get_by_role("button", name="Exportar").nth(0).click()
-            await page.wait_for_timeout(15000)
+            await page.wait_for_timeout(12000)
 
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
             await page.wait_for_timeout(20000)
