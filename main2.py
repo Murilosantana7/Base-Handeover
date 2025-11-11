@@ -144,11 +144,22 @@ async def main():
             # ================== DOWNLOAD 2: HANDEDOVER ==================
             print("\nIniciando Download: Base Handedover")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-            await page.wait_for_timeout(15000)
-
-            # ⬇️ CLIQUE NO FILTRO "Handedover" — SUBSTITUA PELO SEU XPATH CORRETO
-            await page.locator('xpath=/html[1]/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/span[1]').click()
-            await page.wait_for_timeout(10000)
+            
+            # ⬇️ ******** INÍCIO DA ALTERAÇÃO ********
+            # Substituído o XPath frágil e os timeouts fixos
+            print("Procurando e clicando no filtro 'Handedover'...")
+            handedover_filter = page.get_by_text("Handedover", exact=True)
+            
+            # 1. Espera o botão ficar visível
+            await handedover_filter.wait_for(state="visible", timeout=30000)
+            
+            # 2. Clica no botão
+            await handedover_filter.click()
+            
+            # 3. Espera a rede ficar ociosa (sinal de que a tabela carregou)
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            print("Filtro 'Handedover' aplicado e dados carregados.")
+            # ⬆️ ******** FIM DA ALTERAÇÃO ********
 
             await page.get_by_role("button", name="Exportar").nth(0).click()
             await page.wait_for_timeout(12000)
