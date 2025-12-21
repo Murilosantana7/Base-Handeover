@@ -10,7 +10,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ==============================
 # Configuração do diretório de downloads
 # ==============================
-DOWNLOAD_DIR = "/tmp"
+DOWNLOAD_DIR = "/tmp"  # Se estiver no Windows e der erro, mude para: os.path.join(os.getcwd(), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ==============================
@@ -39,6 +39,7 @@ def update_packing_google_sheets_handover(csv_file_path):
             print(f"Arquivo Handedover {csv_file_path} não encontrado.")
             return
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        # Certifique-se de que o arquivo .json está na mesma pasta do script
         creds = ServiceAccountCredentials.from_json_keyfile_name("hxh.json", scope)
         client = gspread.authorize(creds)
         sheet = client.open_by_url(
@@ -53,11 +54,11 @@ def update_packing_google_sheets_handover(csv_file_path):
         print(f"❌ Erro durante o upload Handedover: {e}")
 
 # ==============================
-# Fluxo principal Playwright - Apenas HANDEDOVER com clique no XPath específico
+# Fluxo principal Playwright
 # ==============================
 async def main():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)  # Mude para True em produção
+        browser = await p.chromium.launch(headless=False)  # Deixe False para ver rodando
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
 
@@ -71,20 +72,56 @@ async def main():
             await page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button').click()
             await page.wait_for_load_state("networkidle", timeout=20000)
 
-            # Fecha pop-up, se existir
-            try:
-                await page.locator('.ssc-dialog-close').click(timeout=10000)
-            except:
-                print("➡️ Nenhum pop-up encontrado. Pressionando Escape...")
-                await page.keyboard.press("Escape")
+            # ================== TRATAMENTO DE POP-UP (CORRIGIDO) ==================
+            print("⏳ Aguardando renderização do pop-up...")
+            await page.wait_for_timeout(5000)  # Espera fixa para garantir que o popup apareceu
+
+            print("🧹 Verificando existência de pop-ups...")
+            
+            # Lista de seletores atualizada com o do seu print
+            possible_close_buttons = [
+                ".ssc-dialog-close-icon-wrapper", # <--- O SELETOR DA SUA IMAGEM
+                ".ssc-dialog-close",            
+                ".ant-modal-close",             
+                ".ant-modal-close-x",           
+                "button[aria-label='Close']",   
+                ".ssc-modal-close"              
+            ]
+
+            popup_closed = False
+            
+            # 1. Tenta clicar no botão X se encontrar algum visível
+            for selector in possible_close_buttons:
+                if await page.locator(selector).is_visible():
+                    print(f"⚠️ Pop-up detectado! Fechando com: {selector}")
+                    try:
+                        await page.locator(selector).click()
+                        popup_closed = True
+                        await page.wait_for_timeout(1000) # Espera animação
+                        break
+                    except Exception as e:
+                        print(f"Erro ao tentar clicar em {selector}: {e}")
+
+            # 2. Se não fechou por botão, garante o foco e usa ESC
+            if not popup_closed:
+                print("➡️ Botão não encontrado. Tentando ESC forçado...")
+                try:
+                    # Clica em ponto neutro para garantir foco na janela
+                    await page.mouse.click(10, 10) 
+                    await page.keyboard.press("Escape")
+                except Exception as e:
+                    print(f"Erro ao pressionar ESC: {e}")
+            
+            await page.wait_for_timeout(2000) # Estabilização final
+            # ======================================================================
 
             # ================== DOWNLOAD: HANDEDOVER ==================
             print("\n🚚 Indo para a página de viagens: hubLinehaulTrips/trip")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-            await page.wait_for_timeout(8000)  # Espera inicial para carregamento
+            await page.wait_for_timeout(8000)
 
-            # ⬇️ CLIQUE NO BOTÃO EXATO VIA XPATH (como solicitado)
-            print("🔍 Clicando no filtro 'Handedover' pelo XPath específico...")
+            # CLIQUE NO BOTÃO EXATO VIA XPATH
+            print("🔍 Clicando no filtro 'Handedover'...")
             handedover_xpath = (
                 "/html[1]/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/"
                 "div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/"
@@ -92,7 +129,7 @@ async def main():
             )
             await page.locator(f'xpath={handedover_xpath}').click()
             print("✅ Filtro 'Handedover' clicado com sucesso.")
-            await page.wait_for_timeout(10000)  # Aguarda carregamento dos dados após clique
+            await page.wait_for_timeout(10000)
 
             # Clica em "Exportar"
             print("📤 Clicando em 'Exportar'...")
@@ -126,9 +163,10 @@ async def main():
 
         except Exception as e:
             print(f"❌ Erro crítico: {e}")
+            import traceback
+            traceback.print_exc() # Mostra detalhes do erro se acontecer
         finally:
             await browser.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
