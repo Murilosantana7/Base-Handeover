@@ -10,7 +10,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ==============================
 # Configuração do diretório de downloads
 # ==============================
-DOWNLOAD_DIR = "/tmp"  # Se estiver no Windows e der erro, mude para: os.path.join(os.getcwd(), "downloads")
+DOWNLOAD_DIR = "/tmp"  # Se estiver no Windows e der erro, use: os.path.join(os.getcwd(), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ==============================
@@ -58,13 +58,14 @@ def update_packing_google_sheets_handover(csv_file_path):
 # ==============================
 async def main():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)  # Deixe False para ver rodando
+        # Se for rodar no servidor/GitHub, mude headless para True
+        browser = await p.chromium.launch(headless=False)
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
 
         try:
-            # LOGIN
-            print("🔐 Fazendo login no SPX...")
+            # LOGIN (Usuário do Script 1)
+            print("🔐 Fazendo login no SPX (Ops134294)...")
             await page.goto("https://spx.shopee.com.br/")
             await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=10000)
             await page.locator('xpath=//*[@placeholder="Ops ID"]').fill('Ops134294')
@@ -72,63 +73,96 @@ async def main():
             await page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button').click()
             await page.wait_for_load_state("networkidle", timeout=20000)
 
-            # ================== TRATAMENTO DE POP-UP (CORRIGIDO) ==================
-            print("⏳ Aguardando renderização do pop-up...")
-            await page.wait_for_timeout(5000)  # Espera fixa para garantir que o popup apareceu
-
-            print("🧹 Verificando existência de pop-ups...")
-            
-            # Lista de seletores atualizada com o do seu print
-            possible_close_buttons = [
-                ".ssc-dialog-close-icon-wrapper", # <--- O SELETOR DA SUA IMAGEM
-                ".ssc-dialog-close",            
-                ".ant-modal-close",             
-                ".ant-modal-close-x",           
-                "button[aria-label='Close']",   
-                ".ssc-modal-close"              
-            ]
+            # ================== NOVO TRATAMENTO DE POP-UP (DO SCRIPT 2) ==================
+            print("⏳ Aguardando renderização do pop-up (10s)...")
+            await page.wait_for_timeout(10000) 
 
             popup_closed = False
-            
-            # 1. Tenta clicar no botão X se encontrar algum visível
-            for selector in possible_close_buttons:
-                if await page.locator(selector).is_visible():
-                    print(f"⚠️ Pop-up detectado! Fechando com: {selector}")
-                    try:
-                        await page.locator(selector).click()
-                        popup_closed = True
-                        await page.wait_for_timeout(1000) # Espera animação
-                        break
-                    except Exception as e:
-                        print(f"Erro ao tentar clicar em {selector}: {e}")
 
-            # 2. Se não fechou por botão, garante o foco e usa ESC
+            # --- OPÇÃO 1: TECLA ESC (PRIORIDADE) ---
+            print("1️⃣ Tentativa 1: Pressionando ESC (Método Rápido)...")
+            try:
+                # Clica no centro para garantir foco na janela
+                viewport = page.viewport_size
+                if viewport:
+                    await page.mouse.click(viewport['width'] / 2, viewport['height'] / 2)
+
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(500)
+            except Exception as e:
+                print(f"Erro no ESC: {e}")
+
+            await page.wait_for_timeout(1000)
+
+            # --- OPÇÃO 2: BOTÕES (FALLBACK) ---
+            print("2️⃣ Tentativa 2: Procurando botões de fechar...")
+
+            # Lista combinada de seletores
+            possible_buttons = [
+                ".ssc-dialog-header .ssc-dialog-close-icon-wrapper",
+                ".ssc-dialog-close-icon-wrapper",
+                "svg.ssc-dialog-close",            
+                ".ant-modal-close",              
+                ".ant-modal-close-x",
+                "[aria-label='Close']",
+                ".ssc-modal-close"
+            ]
+
+            for selector in possible_buttons:
+                if await page.locator(selector).count() > 0:
+                    print(f"⚠️ Botão encontrado: {selector}")
+                    try:
+                        # Tenta clique JS primeiro (mais forte)
+                        await page.locator(selector).first.evaluate("element => element.click()")
+                        print("✅ Clique JS realizado no botão.")
+                        popup_closed = True
+                        break
+                    except:
+                        # Se falhar, tenta clique normal forçado
+                        try:
+                            await page.locator(selector).first.click(force=True)
+                            print("✅ Clique forçado realizado.")
+                            popup_closed = True
+                            break
+                        except Exception as e:
+                            print(f"Falha ao clicar em {selector}: {e}")
+
+            # --- OPÇÃO 3: MÁSCARA/FUNDO (ÚLTIMO RECURSO) ---
             if not popup_closed:
-                print("➡️ Botão não encontrado. Tentando ESC forçado...")
-                try:
-                    # Clica em ponto neutro para garantir foco na janela
-                    await page.mouse.click(10, 10) 
-                    await page.keyboard.press("Escape")
-                except Exception as e:
-                    print(f"Erro ao pressionar ESC: {e}")
-            
-            await page.wait_for_timeout(2000) # Estabilização final
-            # ======================================================================
+                print("3️⃣ Tentativa 3: Clicando no fundo escuro...")
+                masks = [".ant-modal-mask", ".ssc-dialog-mask", ".ssc-modal-mask"]
+                for mask in masks:
+                    if await page.locator(mask).count() > 0:
+                        try:
+                            await page.locator(mask).first.click(position={"x": 10, "y": 10}, force=True)
+                            print("✅ Clicado na máscara.")
+                            break
+                        except:
+                            pass
+
+            await page.wait_for_timeout(2000)
+            # =======================================================================
 
             # ================== DOWNLOAD: HANDEDOVER ==================
             print("\n🚚 Indo para a página de viagens: hubLinehaulTrips/trip")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
             await page.wait_for_timeout(8000)
 
-            # CLIQUE NO BOTÃO EXATO VIA XPATH
+            # CLIQUE NO BOTÃO EXATO VIA XPATH (Mantido original do Script 1)
             print("🔍 Clicando no filtro 'Handedover'...")
             handedover_xpath = (
                 "/html[1]/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/"
                 "div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/"
                 "div[1]/div[1]/div[3]/span[1]"
             )
-            await page.locator(f'xpath={handedover_xpath}').click()
-            print("✅ Filtro 'Handedover' clicado com sucesso.")
+            # Tenta clicar pelo XPath original, mas adicionei um try/catch simples caso falhe
+            try:
+                await page.locator(f'xpath={handedover_xpath}').click()
+            except:
+                print("⚠️ XPath falhou, tentando clicar pelo texto 'Handedover'...")
+                await page.get_by_text("Handedover").click()
+                
+            print("✅ Filtro 'Handedover' acionado.")
             await page.wait_for_timeout(10000)
 
             # Clica em "Exportar"
@@ -164,7 +198,7 @@ async def main():
         except Exception as e:
             print(f"❌ Erro crítico: {e}")
             import traceback
-            traceback.print_exc() # Mostra detalhes do erro se acontecer
+            traceback.print_exc()
         finally:
             await browser.close()
 
