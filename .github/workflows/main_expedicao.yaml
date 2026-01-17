@@ -3,10 +3,16 @@ name: main2
 on:
   workflow_dispatch:       # Permite execução manual
 
+# 🔥 TRAVA DE SEGURANÇA 🔥
+# Garante a fila inteligente (um espera o outro)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15    # Aumentei para 15min por segurança
 
     steps:
       - name: Checkout do código
@@ -17,7 +23,9 @@ jobs:
         with:
           python-version: '3.10'
 
+      # Mantive sua lógica de verificação de erro
       - name: Restaurar hxh.json a partir do segredo
+        shell: bash
         run: |
           if [[ -z "$GCP_JSON_BASE64" ]]; then
             echo "❌ Erro: Segredo GCP_JSON_BASE64 está vazio!"
@@ -29,16 +37,18 @@ jobs:
             exit 1
           fi
           echo "✅ hxh.json criado com sucesso."
-          ls -l hxh.json
-        shell: bash
         env:
           GCP_JSON_BASE64: ${{ secrets.GCP_JSON_BASE64 }}
 
       - name: Instalar dependências
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install playwright
           playwright install chromium
+          # 👇 OBRIGATÓRIO: Instala dependências do sistema para o Chrome rodar no Linux
+          playwright install-deps
 
       - name: Executar o script
-        run: xvfb-run python main2.py
+        # 👇 Define resolução 1920x1080 para evitar erros visuais na Shopee
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python main2.py
