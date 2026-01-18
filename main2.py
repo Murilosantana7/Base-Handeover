@@ -44,7 +44,7 @@ def update_google_sheets_handover(csv_file_path):
         print(f"❌ Erro no Google Sheets: {e}")
 
 # ==============================
-# Fluxo Principal com Cascata
+# Fluxo Principal
 # ==============================
 async def main():
     async with async_playwright() as p:
@@ -55,11 +55,11 @@ async def main():
         )
         page = await context.new_page()
 
-        # Bloqueio de imagens para performance
+        # Bloqueio de imagens para performance no GitHub Actions
         await page.route("**/*.{png,jpg,jpeg,svg,gif}", lambda route: route.abort())
 
         try:
-            # 1. LOGIN (Credenciais Atualizadas)
+            # 1. LOGIN (Credenciais Ops134294)
             print("🔐 Iniciando Login (Ops134294)...")
             await page.goto("https://spx.shopee.com.br/", wait_until="commit", timeout=120000)
             
@@ -76,36 +76,21 @@ async def main():
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip", wait_until="domcontentloaded", timeout=90000)
             await page.wait_for_timeout(10000)
 
-            # 3. ESTRATÉGIA DE CLIQUE EM CASCATA
-            print("🔍 Iniciando tentativas de clique no filtro...")
-            tentativas = [
-                ("XPATH_FORNECIDO", "xpath=/html/body/div/div/div[2]/div[2]/div/div/div/div[2]/div[1]/div[1]/div/div[1]/div/div/div/div/div[3]/span"),
-                ("CSS_POSICAO_TAB", ".ssc-tabs-tab:nth-child(2)"),
-                ("TEXTO_HANDEDOVER", "text='Handedover'"),
-                ("TEXTO_EXPEDIDOS", "text='Expedidos'")
-            ]
-
-            clique_sucesso = False
-            for nome, seletor in tentativas:
-                try:
-                    print(f"⏳ Testando método: {nome}...")
-                    alvo = page.locator(seletor).first
-                    if await alvo.count() > 0:
-                        await alvo.evaluate("el => el.click()")
-                        print(f"✅ SUCESSO! O botão foi clicado usando o método: {nome}")
-                        clique_sucesso = True
-                        break
-                except: continue
-
-            if not clique_sucesso:
-                print("⚠️ Tentando clique por posição fixa...")
+            # 3. FILTRO HANDEDOVER (Via XPath Direto)
+            print("🔍 Aplicando filtro Handedover...")
+            xpath_filtro = "xpath=/html/body/div/div/div[2]/div[2]/div/div/div/div[2]/div[1]/div[1]/div/div[1]/div/div/div/div/div[3]/span"
+            try:
+                await page.locator(xpath_filtro).first.evaluate("el => el.click()")
+                print("✅ Filtro selecionado.")
+            except:
+                print("⚠️ Falha ao clicar no filtro, tentando clique por posição...")
                 await page.mouse.click(200, 360) 
 
             await page.wait_for_timeout(10000)
 
             # 4. EXPORTAÇÃO
             print("📤 Clicando em Exportar...")
-            await page.get_by_role("button", name="Exportar").first.evaluate("el => el.click()")
+            await page.get_by_role("button", name=re.compile(r"Exportar|Export", re.I)).first.evaluate("el => el.click()")
             await page.wait_for_timeout(15000)
 
             # 5. DOWNLOAD NO TASK CENTER
@@ -113,39 +98,43 @@ async def main():
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter", wait_until="domcontentloaded")
             await page.wait_for_timeout(12000)
 
-            # PASSO EXTRA: Clicar em "Export Task" para fechar aba lateral (conforme solicitado)
+            # Limpeza de visualização via XPath superior conforme solicitado
             print("🧹 Limpando visualização (Clique em Export Task)...")
+            xpath_export_task = "xpath=/html/body/div[1]/div/div[2]/div[1]/div[1]/span/span[1]/span"
             try:
-                # Usando o XPath específico fornecido para o menu superior
-                btn_aba = page.locator("xpath=/html/body/div[1]/div/div[2]/div[1]/div[1]/span/span[1]/span")
-                await btn_aba.wait_for(state="visible", timeout=10000)
-                await btn_aba.evaluate("el => el.click()")
-            except:
-                print("⚠️ Não foi possível clicar na aba superior, prosseguindo...")
+                await page.locator(xpath_export_task).wait_for(state="visible", timeout=15000)
+                await page.locator(xpath_export_task).evaluate("el => el.click()")
+            except: pass
 
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(8000)
 
-            # DOWNLOAD FINAL
-            print("⬇️ Localizando o primeiro botão de download...")
-            # Busca por "Baixar" ou "Download" e pega o primeiro da lista (.first)
-            botao_baixar = page.locator("text='Baixar', text='Download'").first
+            # LÓGICA DE CLIQUE JS (MESMA DO SCRIPT PENDING)
+            print("⬇️ Iniciando download...")
+            try:
+                # Espera o texto aparecer para garantir carga do DOM
+                await page.wait_for_selector("text=Baixar", timeout=30000)
+                
+                async with page.expect_download(timeout=90000) as download_info:
+                    print("🔎 Executando clique via JavaScript (Bypass de espera de navegação)...")
+                    
+                    # === LÓGICA DE BYPASS DO SCRIPT PENDING ===
+                    # Usa .evaluate() para evitar que o Playwright trave esperando navegação
+                    await page.locator("text=Baixar").first.evaluate("element => element.click()")
+                    print("✅ Comando de clique enviado.")
+
+                download = await download_info.value
+                path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
+                await download.save_as(path)
+                
+                # Finalização
+                final_path = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
+                if final_path:
+                    update_google_sheets_handover(final_path)
+                    print("\n🎉 PROCESSO HANDEDOVER CONCLUÍDO COM SUCESSO!")
             
-            # Espera o botão estar pronto para ser clicado (evita Timeout de 30s)
-            await botao_baixar.wait_for(state="visible", timeout=60000)
-
-            async with page.expect_download(timeout=90000) as download_info:
-                print("🔎 Executando clique via evaluate...")
-                await botao_baixar.evaluate("el => el.click()")
-
-            download = await download_info.value
-            path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
-            await download.save_as(path)
-            
-            # Finalização
-            final_path = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
-            if final_path:
-                update_google_sheets_handover(final_path)
-                print("\n🎉 PROCESSO HANDEDOVER CONCLUÍDO COM SUCESSO!")
+            except Exception as e:
+                print(f"❌ Erro no download: {e}")
+                await page.screenshot(path="debug_download.png")
 
         except Exception as e:
             print(f"❌ Erro crítico: {e}")
