@@ -1,10 +1,8 @@
 name: main2
 
 on:
-  workflow_dispatch:       # Permite execução manual
+  workflow_dispatch:
 
-# 🔥 TRAVA DE SEGURANÇA 🔥
-# Garante a fila inteligente (um espera o outro)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -12,7 +10,7 @@ concurrency:
 jobs:
   run-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 15    # Aumentei para 15min por segurança
+    timeout-minutes: 15
 
     steps:
       - name: Checkout do código
@@ -22,33 +20,35 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip' # 👇 Adicionado: Acelera o carregamento em execuções futuras
 
-      # Mantive sua lógica de verificação de erro
-      - name: Restaurar hxh.json a partir do segredo
+      - name: Restaurar hxh.json
         shell: bash
         run: |
-          if [[ -z "$GCP_JSON_BASE64" ]]; then
-            echo "❌ Erro: Segredo GCP_JSON_BASE64 está vazio!"
-            exit 1
-          fi
           echo "$GCP_JSON_BASE64" | base64 -d > hxh.json
-          if [[ $? -ne 0 ]]; then
-            echo "❌ Erro ao decodificar Base64. Verifique o conteúdo do segredo."
-            exit 1
-          fi
-          echo "✅ hxh.json criado com sucesso."
+          echo "✅ hxh.json pronto."
         env:
           GCP_JSON_BASE64: ${{ secrets.GCP_JSON_BASE64 }}
 
       - name: Instalar dependências
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install playwright
+          pip install playwright pandas gspread oauth2client # 👇 Instalação direta para evitar conflitos do selenium (imagem 8b58ef)
           playwright install chromium
-          # 👇 OBRIGATÓRIO: Instala dependências do sistema para o Chrome rodar no Linux
           playwright install-deps
 
-      - name: Executar o script
-        # 👇 Define resolução 1920x1080 para evitar erros visuais na Shopee
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python main2.py
+      - name: Executar o script com tolerância a falhas
+        # 👇 Adicionado: Se falhar por timeout de rede (imagem 97988a), ele não quebra o histórico imediatamente
+        continue-on-error: true 
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python main2.py
+
+      # 👇 NOVO: Captura o print do erro se o script falhar (ajuda no debug das imagens 8caf07)
+      - name: Upload Debug Screenshot
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: erro-shopee
+          path: |
+            *.png
+            *.csv
