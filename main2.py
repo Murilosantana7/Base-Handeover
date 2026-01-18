@@ -6,11 +6,12 @@ import shutil
 import gspread
 import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
+import re
 
 # ==============================
 # Configuração de Ambiente
 # ==============================
-DOWNLOAD_DIR = "/tmp"  # Se estiver no Windows, use: os.path.join(os.getcwd(), "downloads")
+DOWNLOAD_DIR = "/tmp" 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 def rename_downloaded_file_handover(download_dir, download_path):
@@ -21,7 +22,7 @@ def rename_downloaded_file_handover(download_dir, download_path):
         if os.path.exists(new_file_path):
             os.remove(new_file_path)
         shutil.move(download_path, new_file_path)
-        print(f"✅ Arquivo renomeado para: {new_file_name}")
+        print(f"✅ Arquivo Handedover salvo como: {new_file_path}")
         return new_file_path
     except Exception as e:
         print(f"❌ Erro ao renomear arquivo: {e}")
@@ -39,7 +40,7 @@ def update_google_sheets_handover(csv_file_path):
         df = pd.read_csv(csv_file_path).fillna("")
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-        print("✅ Dados enviados para o Google Sheets!")
+        print("✅ Dados enviados para a aba 'Base Handedover'!")
     except Exception as e:
         print(f"❌ Erro no Google Sheets: {e}")
 
@@ -48,8 +49,8 @@ def update_google_sheets_handover(csv_file_path):
 # ==============================
 async def main():
     async with async_playwright() as p:
-        # Lançando navegador com viewport estável
-        browser = await p.chromium.launch(headless=False)
+        # Lançamento idêntico ao script que funciona (Base Pending)
+        browser = await p.chromium.launch(headless=True) # Mantenha True para GitHub Actions
         context = await browser.new_context(
             accept_downloads=True, 
             viewport={'width': 1366, 'height': 768}
@@ -57,69 +58,59 @@ async def main():
         page = await context.new_page()
 
         try:
-            # 1. LOGIN (Lógica Reforçada)
-            print("🔐 Acessando portal SPX...")
-            await page.goto("https://spx.shopee.com.br/", wait_until="domcontentloaded", timeout=60000)
+            # 1. LOGIN (Usando a lógica do script funcional e suas credenciais)
+            print("🔐 Fazendo login no SPX (Ops113074)...")
+            await page.goto("https://spx.shopee.com.br/", wait_until="networkidle", timeout=90000)
             
-            print("⏳ Aguardando campos de login...")
-            input_user = page.locator('xpath=//*[@placeholder="Ops ID"]')
-            await input_user.wait_for(state="visible", timeout=20000)
+            # Espera pelo seletor de login (usando seletor flexível para GitHub)
+            await page.wait_for_selector('input[placeholder*="Ops ID"], xpath=//*[@placeholder="Ops ID"]', timeout=30000)
             
-            # Focar e preencher
-            await input_user.click()
-            await input_user.fill('Ops134294')
+            await page.locator('xpath=//*[@placeholder="Ops ID"]').fill('Ops113074')
+            await page.locator('xpath=//*[@placeholder="Senha"]').fill('@Shopee123')
             
-            input_pass = page.locator('xpath=//*[@placeholder="Senha"]')
-            await input_pass.click()
-            await input_pass.fill('@Shopee123')
+            # Clique no botão de login
+            await page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button').click()
             
-            print("🚀 Enviando formulário de login...")
-            btn_login = page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button')
-            await btn_login.evaluate("el => el.click()")
-            
-            # Espera estabilizar a rede após login
-            await page.wait_for_load_state("networkidle", timeout=45000)
+            print("⏳ Aguardando estabilização pós-login (40s)...")
+            await page.wait_for_load_state("networkidle", timeout=40000)
 
-            # 2. TRATAMENTO DE POP-UPS (Baseado no Script Funcional)
+            # 2. TRATAMENTO DE POP-UPS
             print("⏳ Verificando pop-ups (10s)...")
             await page.wait_for_timeout(10000)
-            
-            # Tentar fechar com ESC
             await page.keyboard.press("Escape")
             
-            # Tentar fechar via seletores comuns
-            fechar_seletores = [".ssc-dialog-close-icon-wrapper", ".ant-modal-close", ".ant-modal-close-x"]
-            for seletor in fechar_seletores:
-                if await page.locator(seletor).count() > 0:
-                    await page.locator(seletor).first.evaluate("el => el.click()")
-                    print(f"✅ Pop-up fechado via seletor: {seletor}")
+            possible_buttons = [".ssc-dialog-close-icon-wrapper", ".ant-modal-close", ".ant-modal-close-x"]
+            for selector in possible_buttons:
+                if await page.locator(selector).count() > 0:
+                    await page.locator(selector).first.evaluate("el => el.click()")
                     break
 
-            # 3. NAVEGAÇÃO E FILTRO
+            # 3. NAVEGAÇÃO E FILTRO HANDEDOVER
             print("🚚 Acessando página de viagens...")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
             await page.wait_for_timeout(12000)
 
             print("🔍 Selecionando status 'Handedover'...")
-            # Tentativa por texto (mais estável)
+            # Tentativa via JS para maior estabilidade
             try:
                 await page.get_by_text("Handedover").first.evaluate("el => el.click()")
             except:
                 xpath_hand = "/html[1]/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/span[1]"
                 await page.locator(f'xpath={xpath_hand}').evaluate("el => el.click()")
             
-            await page.wait_for_timeout(8000)
-
-            # 4. EXPORTAÇÃO E DOWNLOAD
-            print("📤 Solicitando Exportação...")
-            await page.get_by_role("button", name="Exportar").first.evaluate("el => el.click()")
             await page.wait_for_timeout(10000)
 
-            print("📂 Indo para o Centro de Tarefas...")
+            # 4. EXPORTAÇÃO
+            print("📤 Clicando em Exportar...")
+            await page.get_by_role("button", name="Exportar").first.evaluate("el => el.click()")
+            await page.wait_for_timeout(12000)
+
+            # 5. DOWNLOAD NO CENTRO DE TAREFAS
+            print("📂 Indo para o centro de tarefas...")
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
             await page.wait_for_timeout(12000)
 
-            # Garante que a aba correta está ativa
+            # Seleciona a aba correta
             try:
                 await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=5000)
             except: pass
@@ -128,21 +119,22 @@ async def main():
             await page.wait_for_selector("text=Baixar", timeout=30000)
 
             async with page.expect_download(timeout=60000) as download_info:
-                # Clique via JS para evitar erros de intercepção
+                # A técnica "mágica" do evaluate para evitar bloqueios
                 await page.locator("text=Baixar").first.evaluate("el => el.click()")
 
             download = await download_info.value
             path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
             await download.save_as(path)
             
-            # Finalização
+            # Finalização e Upload
             final_path = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
             if final_path:
                 update_google_sheets_handover(final_path)
-                print("\n🎉 PROCESSO CONCLUÍDO COM SUCESSO!")
+                print("\n🎉 PROCESSO HANDEDOVER CONCLUÍDO!")
 
         except Exception as e:
-            print(f"❌ Ocorreu um erro: {e}")
+            print(f"❌ Erro: {e}")
+            await page.screenshot(path="debug_handedover.png")
         finally:
             await browser.close()
 
