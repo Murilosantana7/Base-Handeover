@@ -6,6 +6,7 @@ import shutil
 import gspread
 import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
+import re
 
 # ==============================
 # Configuração de Ambiente
@@ -18,13 +19,12 @@ def rename_downloaded_file_handover(download_dir, download_path):
         current_hour = datetime.now().strftime("%H")
         new_file_name = f"PROD-{current_hour}.csv"
         new_file_path = os.path.join(download_dir, new_file_name)
-        if os.path.exists(new_file_path):
-            os.remove(new_file_path)
+        if os.path.exists(new_file_path): os.remove(new_file_path)
         shutil.move(download_path, new_file_path)
-        print(f"✅ Arquivo salvo: {new_file_name}")
+        print(f"✅ Arquivo salvo como: {new_file_name}")
         return new_file_path
     except Exception as e:
-        print(f"❌ Erro ao renomear: {e}")
+        print(f"❌ Erro ao renomear arquivo: {e}")
         return None
 
 def update_google_sheets_handover(csv_file_path):
@@ -39,72 +39,93 @@ def update_google_sheets_handover(csv_file_path):
         df = pd.read_csv(csv_file_path).fillna("")
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-        print("✅ Google Sheets atualizado!")
+        print("✅ Dados enviados para a aba 'Base Handedover'!")
     except Exception as e:
-        print(f"❌ Erro Sheets: {e}")
+        print(f"❌ Erro no Google Sheets: {e}")
 
 # ==============================
-# Fluxo Principal Otimizado
+# Fluxo Principal com Cascata
 # ==============================
 async def main():
     async with async_playwright() as p:
-        # Modo headless é obrigatório no GitHub Actions
+        # Configuração idêntica ao script Pending para estabilidade
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             accept_downloads=True, 
-            viewport={'width': 1280, 'height': 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            viewport={'width': 1366, 'height': 768}
         )
         page = await context.new_page()
 
+        # Bloqueio de imagens para acelerar carregamento no GitHub
+        await page.route("**/*.{png,jpg,jpeg,svg,gif}", lambda route: route.abort())
+
         try:
-            print("🔐 Acessando portal SPX (Ops113074)...")
-            # Mudança crucial: wait_until="commit" entra na página assim que o servidor responde
+            # 1. LOGIN (Ops113074)
+            print("🔐 Iniciando Login (Ops113074)...")
             await page.goto("https://spx.shopee.com.br/", wait_until="commit", timeout=120000)
             
-            print("⏳ Aguardando campos de login...")
-            # Espera apenas pelo elemento, não pela rede inteira
-            input_user = page.locator('input[placeholder*="Ops ID"]')
-            await input_user.wait_for(state="visible", timeout=60000)
-            
-            await input_user.fill('Ops113074')
+            await page.locator('input[placeholder*="Ops ID"]').fill('Ops113074')
             await page.locator('input[placeholder*="Senha"]').fill('@Shopee123')
-            
-            print("🚀 Clicando em Entrar...")
             await page.locator('button:has-text("Login"), button:has-text("Entrar"), .ant-btn-primary').first.click()
             
-            # Espera curta para processar o clique
-            await page.wait_for_timeout(10000)
-
-            # 2. TRATAMENTO DE POP-UPS
-            print("⏳ Limpando possíveis pop-ups...")
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(2000)
-
-            # 3. NAVEGAÇÃO DIRETA
-            print("🚚 Indo para Viagens...")
-            await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip", wait_until="domcontentloaded", timeout=60000)
+            print("⏳ Aguardando estabilização pós-login...")
             await page.wait_for_timeout(15000)
+            await page.keyboard.press("Escape")
 
-            print("🔍 Selecionando 'Handedover'...")
-            # Tenta localizar o texto e clicar via JavaScript para ignorar sobreposições
-            await page.get_by_text("Handedover").first.evaluate("el => el.click()")
-            await page.wait_for_timeout(5000)
+            # 2. NAVEGAÇÃO
+            print("🚚 Acessando aba de Viagens...")
+            await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip", wait_until="domcontentloaded", timeout=90000)
+            await page.wait_for_timeout(10000)
 
-            # 4. EXPORTAÇÃO E TASK CENTER
-            print("📤 Solicitando Exportação...")
+            # 3. ESTRATÉGIA DE CLIQUE EM CASCATA
+            print("🔍 Iniciando tentativas de clique no filtro...")
+            
+            # Lista de tentativas baseada no XPath fornecido e seletores técnicos
+            tentativas = [
+                ("XPATH_FORNECIDO", "xpath=/html/body/div/div/div[2]/div[2]/div/div/div/div[2]/div[1]/div[1]/div/div[1]/div/div/div/div/div[3]/span"),
+                ("CSS_POSICAO_TAB", ".ssc-tabs-tab:nth-child(2)"), # Segunda aba
+                ("TEXTO_HANDEDOVER", "text='Handedover'"),
+                ("TEXTO_EXPEDIDOS", "text='Expedidos'"),
+                ("CSS_TAB_INDEX", "div[id*='tab-1']")
+            ]
+
+            clique_sucesso = False
+            for nome, seletor in tentativas:
+                try:
+                    print(f"⏳ Testando método: {nome}...")
+                    alvo = page.locator(seletor).first
+                    
+                    if await alvo.count() > 0:
+                        # Evaluate click ignora se houver algo na frente do botão
+                        await alvo.evaluate("el => el.click()")
+                        print(f"✅ SUCESSO! O botão foi clicado usando o método: {nome}")
+                        clique_sucesso = True
+                        break
+                except:
+                    continue
+
+            if not clique_sucesso:
+                print("⚠️ Falha em todos os seletores. Tentando clique por posição fixa...")
+                await page.mouse.click(200, 360) 
+
+            await page.wait_for_timeout(10000)
+
+            # 4. EXPORTAÇÃO
+            print("📤 Clicando em Exportar...")
             await page.get_by_role("button", name="Exportar").first.evaluate("el => el.click()")
-            await page.wait_for_timeout(10000)
+            await page.wait_for_timeout(12000)
 
-            print("📂 Baixando no Centro de Tarefas...")
+            # 5. DOWNLOAD NO TASK CENTER
+            print("📂 Navegando para o centro de tarefas...")
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter", wait_until="domcontentloaded")
-            await page.wait_for_timeout(10000)
+            await page.wait_for_timeout(12000)
 
-            # Clique na aba e download
+            # Garantir aba de download
             try:
-                await page.get_by_text("Exportar tarefa").first.click(timeout=5000)
+                await page.get_by_text(re.compile(r"Exportar tarefa|Export Task", re.IGNORECASE)).first.click(timeout=5000)
             except: pass
 
+            print("⬇️ Iniciando download...")
             async with page.expect_download(timeout=60000) as download_info:
                 await page.locator("text=Baixar").first.evaluate("el => el.click()")
 
@@ -112,12 +133,17 @@ async def main():
             path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
             await download.save_as(path)
             
+            # Finalização
             final_path = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
             if final_path:
                 update_google_sheets_handover(final_path)
+                print("\n🎉 PROCESSO HANDEDOVER CONCLUÍDO COM SUCESSO!")
 
         except Exception as e:
-            print(f"❌ Erro durante a execução: {e}")
+            print(f"❌ Erro crítico: {e}")
+            # Tira print para conferirmos o que o robô está vendo se falhar
+            try: await page.screenshot(path="debug_final.png")
+            except: pass
         finally:
             await browser.close()
 
