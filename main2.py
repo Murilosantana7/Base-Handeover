@@ -14,26 +14,15 @@ def log(mensagem):
     horario = datetime.now().strftime("%H:%M:%S")
     print(f"[{horario}] {mensagem}")
 
-# Função de limpeza reutilizável (A CHAVE PARA RESOLVER O PROBLEMA)
 async def limpar_popups(page):
-    log("🧹 Varrendo e destruindo pop-ups bloqueadores...")
     try:
         await page.evaluate('''() => {
-            // Remove modais, máscaras e wrappers de diálogo
-            const seletores = [
-                '.ssc-dialog-wrapper', 
-                '.ssc-dialog-mask', 
-                '.ant-modal-mask', 
-                '.ant-modal-wrap',
-                '.ssc-dialog' // Adicionado para garantir
-            ];
+            const seletores = ['.ssc-dialog-wrapper', '.ssc-dialog-mask', '.ant-modal-mask', '.ant-modal-wrap'];
             seletores.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
-            document.body.style.overflow = 'auto'; // Destrava o scroll
+            document.body.style.overflow = 'auto';
         }''')
-        # Tenta fechar com ESC apenas por garantia
         await page.keyboard.press("Escape")
-    except Exception as e:
-        log(f"⚠️ Aviso na limpeza: {e}")
+    except: pass
 
 def rename_downloaded_file_handover(download_dir, download_path):
     try:
@@ -90,69 +79,71 @@ async def main():
             await page.wait_for_timeout(5000)
             await limpar_popups(page)
 
-            # 2. NAVEGAÇÃO PARA VIAGENS (Aqui estava o ponto cego)
+            # 2. VIAGENS
             log("🚚 Indo para Viagens...")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
             await page.wait_for_timeout(8000) 
-            
-            # === LIMPEZA CRÍTICA AQUI ===
-            # O pop-up "Datafix Tool" aparece ao carregar ESSA página. Precisamos matar ele agora.
             await limpar_popups(page)
-            # ============================
 
             log("🔍 Filtrando Handedover...")
-            # Agora o caminho deve estar livre, mas mantemos o evaluate por segurança
             await page.get_by_text("Handedover").first.evaluate("element => element.click()")
             await page.wait_for_timeout(3000)
             
             log("📤 Exportando...")
-            # O botão exportar agora deve estar "clicável" pois removemos o overlay
             exportar_btn = page.get_by_role("button", name="Exportar").first
             await exportar_btn.evaluate("element => element.click()")
-            await page.wait_for_timeout(8000)
+            await page.wait_for_timeout(10000)
 
             # 3. CENTRO DE TAREFAS
             log("📂 Indo para Centro de Tarefas...")
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
-            await page.wait_for_timeout(7000)
-            
-            # Limpeza preventiva também no Centro de Tarefas
+            # Aumentei um pouco a espera inicial para garantir carregamento
+            await page.wait_for_timeout(10000) 
             await limpar_popups(page)
 
+            # Tenta focar na aba
             try:
-                # Tenta focar na aba
                 aba = page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).first
-                if await aba.is_visible():
-                    await aba.evaluate("element => element.click()")
+                await aba.evaluate("element => element.click()")
             except: pass
 
-            # 4. DOWNLOAD
+            # 4. DOWNLOAD COM ESPERA INTELIGENTE
             log("⬇️ Buscando download...")
             download_ok = False
+            
             for i in range(1, 15):
-                baixar_btn = page.locator('text="Baixar"').first
+                try:
+                    # AQUI ESTÁ A CORREÇÃO PRINCIPAL:
+                    # Em vez de apenas checar se está visível agora, damos 5 segundos para ele aparecer
+                    # Isso evita o reload imediato se a internet oscilar
+                    await page.wait_for_selector('text="Baixar"', timeout=5000)
+                    
+                    # Se passou da linha acima, o botão existe!
+                    log(f"✨ Botão encontrado na tentativa {i}!")
+                    
+                    baixar_btn = page.locator('text="Baixar"').first
+                    async with page.expect_download(timeout=60000) as download_info:
+                        await baixar_btn.evaluate("element => element.click()")
+                    
+                    download = await download_info.value
+                    path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
+                    await download.save_as(path)
+                    
+                    f_path = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
+                    if f_path: update_google_sheets_handover(f_path)
+                    download_ok = True
+                    break
                 
-                if await baixar_btn.is_visible():
-                    log(f"✨ Botão encontrado!")
-                    try:
-                        async with page.expect_download(timeout=60000) as download_info:
-                            await baixar_btn.evaluate("element => element.click()")
-                        
-                        download = await download_info.value
-                        path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
-                        await download.save_as(path)
-                        
-                        final = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
-                        if final: update_google_sheets_handover(final)
-                        download_ok = True
-                        break
-                    except: pass
+                except Exception:
+                    # Se deu timeout de 5s procurando o botão, aí sim tentamos reload
+                    pass
                 
-                log(f"⏳ Tentativa {i}: Recarregando...")
-                await page.wait_for_timeout(10000)
+                log(f"⏳ Tentativa {i}: Arquivo não apareceu. Reload em 15s...")
+                await page.wait_for_timeout(15000)
                 await page.reload()
                 await page.wait_for_load_state("domcontentloaded")
-                # Re-limpa popups após reload e re-foca aba
+                
+                # Re-limpa e Re-foca após reload (CRUCIAL)
                 await limpar_popups(page)
                 try:
                     aba = page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).first
