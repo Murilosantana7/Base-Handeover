@@ -10,19 +10,11 @@ import time
 
 DOWNLOAD_DIR = "/tmp"
 
-def log(mensagem):
-    horario = datetime.now().strftime("%H:%M:%S")
-    print(f"[{horario}] {mensagem}")
-
-async def limpar_popups(page):
-    try:
-        await page.evaluate('''() => {
-            const seletores = ['.ssc-dialog-wrapper', '.ssc-dialog-mask', '.ant-modal-mask', '.ant-modal-wrap'];
-            seletores.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
-            document.body.style.overflow = 'auto';
-        }''')
-        await page.keyboard.press("Escape")
-    except: pass
+# ==============================
+# Funções de Apoio (Mantidas simples)
+# ==============================
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def rename_downloaded_file_handover(download_dir, download_path):
     try:
@@ -31,11 +23,9 @@ def rename_downloaded_file_handover(download_dir, download_path):
         new_file_path = os.path.join(download_dir, new_file_name)
         if os.path.exists(new_file_path): os.remove(new_file_path)
         shutil.move(download_path, new_file_path)
-        log(f"✅ Arquivo renomeado: {new_file_name}")
+        log(f"✅ Arquivo salvo: {new_file_name}")
         return new_file_path
-    except Exception as e:
-        log(f"❌ Erro ao renomear: {e}")
-        return None
+    except Exception: return None
 
 def update_google_sheets_handover(csv_file_path):
     try:
@@ -44,118 +34,146 @@ def update_google_sheets_handover(csv_file_path):
         client = gspread.authorize(creds)
         sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1LZ8WUrgN36Hk39f7qDrsRwvvIy1tRXLVbl3-wSQn-Pc/edit#gid=734921183")
         worksheet = sheet.worksheet("Base Handedover")
-        
-        log("📊 Lendo CSV...")
         df = pd.read_csv(csv_file_path).fillna("")
-        
-        log("📤 Atualizando Sheets...")
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-        log("✅ Sucesso!")
-    except Exception as e:
-        log(f"❌ Erro no Sheets: {e}")
+        log(f"✅ Sheets atualizada!")
+    except Exception: pass
 
+# ==============================
+# Fluxo Principal (Estrutura do Pending)
+# ==============================
 async def main():
-    start_time = time.time()
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    
     async with async_playwright() as p:
-        log("🚀 Iniciando...")
+        # Configuração idêntica ao Pending
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(accept_downloads=True, viewport={'width': 1366, 'height': 768})
         page = await context.new_page()
 
         try:
-            # 1. LOGIN
-            log("🔐 Login...")
+            # 1. LOGIN (CÓPIA DO PENDING)
+            log("🔐 Fazendo login no SPX...")
             await page.goto("https://spx.shopee.com.br/")
-            await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=15000)
+            await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=10000)
             await page.locator('xpath=//*[@placeholder="Ops ID"]').fill('Ops134294')
             await page.locator('xpath=//*[@placeholder="Senha"]').fill('@Shopee123')
-            await page.locator('button:has-text("Login"), button:has-text("Entrar")').click()
-            await page.wait_for_load_state("networkidle")
+            await page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button').click()
+            await page.wait_for_load_state("networkidle", timeout=40000)
 
-            # Limpeza Pós-Login
-            await page.wait_for_timeout(5000)
-            await limpar_popups(page)
+            # 2. TRATAMENTO DE POP-UP (CÓPIA DO PENDING)
+            # Esse bloco funcionou no seu outro script, então trouxemos ele de volta
+            log("⏳ Aguardando renderização do pop-up (10s)...")
+            await page.wait_for_timeout(10000) 
+            
+            popup_closed = False
+            # Tentativa 1: ESC
+            try:
+                await page.keyboard.press("Escape")
+            except: pass
+            
+            # Tentativa 2: Seletores Específicos (Do Pending)
+            possible_buttons = [
+                ".ssc-dialog-header .ssc-dialog-close-icon-wrapper",
+                ".ssc-dialog-close-icon-wrapper",
+                "svg.ssc-dialog-close",             
+                ".ant-modal-close",                
+                ".ant-modal-close-x",
+                "[aria-label='Close']"
+            ]
+            for selector in possible_buttons:
+                if await page.locator(selector).count() > 0:
+                    try:
+                        await page.locator(selector).first.evaluate("element => element.click()")
+                        popup_closed = True
+                        break
+                    except: pass
+            
+            # Tentativa 3: Máscara/Fundo (Do Pending)
+            if not popup_closed:
+                masks = [".ant-modal-mask", ".ssc-dialog-mask", ".ssc-modal-mask"]
+                for mask in masks:
+                    if await page.locator(mask).count() > 0:
+                        try:
+                            await page.locator(mask).first.click(position={"x": 10, "y": 10}, force=True)
+                            break
+                        except: pass
+            
+            # Limpeza Extra de Garantia (Minha adição de segurança)
+            await page.evaluate('''() => {
+                document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask').forEach(el => el.remove());
+            }''')
 
-            # 2. VIAGENS
+            # 3. NAVEGAÇÃO E EXPORTAÇÃO (Adaptação necessária para Handedover)
             log("🚚 Indo para Viagens...")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-            await page.wait_for_timeout(8000) 
-            await limpar_popups(page)
+            await page.wait_for_timeout(12000)
 
+            # [DIFERENÇA] Aqui precisamos clicar no Handedover
             log("🔍 Filtrando Handedover...")
-            await page.get_by_text("Handedover").first.evaluate("element => element.click()")
+            try:
+                # Usamos o evaluate (igual ao clique de download do Pending) para garantir
+                await page.get_by_text("Handedover").first.evaluate("element => element.click()")
+            except: pass
+            
             await page.wait_for_timeout(3000)
             
-            log("📤 Exportando...")
-            exportar_btn = page.get_by_role("button", name="Exportar").first
-            await exportar_btn.evaluate("element => element.click()")
-            await page.wait_for_timeout(10000)
+            log("📤 Clicando em exportar...")
+            # Usando evaluate para evitar bloqueio de pop-up residual
+            await page.get_by_role("button", name="Exportar").first.evaluate("element => element.click()")
+            await page.wait_for_timeout(12000)
 
-            # 3. CENTRO DE TAREFAS
-            log("📂 Indo para Centro de Tarefas...")
+            # 4. CENTRO DE TAREFAS (CÓPIA DO PENDING)
+            log("📂 Indo para o centro de tarefas...")
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
-            # Aumentei um pouco a espera inicial para garantir carregamento
-            await page.wait_for_timeout(10000) 
-            await limpar_popups(page)
-
-            # Tenta focar na aba
+            await page.wait_for_timeout(10000)
+            
+            # Seleção de Aba (Do Pending)
             try:
-                aba = page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).first
-                await aba.evaluate("element => element.click()")
+                await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=5000)
             except: pass
 
-            # 4. DOWNLOAD COM ESPERA INTELIGENTE
-            log("⬇️ Buscando download...")
-            download_ok = False
+            # 5. LÓGICA DE ESPERA (CÓPIA DO PENDING + LOOP)
+            # O Pending espera 20s pelo texto. Vamos fazer isso dentro de um loop.
+            log("⬇️ Aguardando a tabela carregar...")
             
-            for i in range(1, 15):
+            download_sucesso = False
+            for i in range(1, 15): # Tenta por várias vezes
                 try:
-                    # AQUI ESTÁ A CORREÇÃO PRINCIPAL:
-                    # Em vez de apenas checar se está visível agora, damos 5 segundos para ele aparecer
-                    # Isso evita o reload imediato se a internet oscilar
-                    await page.wait_for_selector('text="Baixar"', timeout=5000)
+                    # AQUI ESTÁ A CHAVE: O Pending usa wait_for_selector com timeout longo.
+                    # Isso faz o script "sentar e esperar" a tabela aparecer, em vez de recarregar freneticamente.
+                    log(f"⏳ Tentativa {i}: Procurando texto 'Baixar' (Aguardando até 20s)...")
+                    await page.wait_for_selector("text=Baixar", timeout=20000)
                     
-                    # Se passou da linha acima, o botão existe!
-                    log(f"✨ Botão encontrado na tentativa {i}!")
-                    
-                    baixar_btn = page.locator('text="Baixar"').first
+                    log("✅ Texto 'Baixar' encontrado! Iniciando download...")
                     async with page.expect_download(timeout=60000) as download_info:
-                        await baixar_btn.evaluate("element => element.click()")
+                        # CLIQUE VIA JS (IGUAL AO PENDING)
+                        await page.locator("text=Baixar").first.evaluate("element => element.click()")
                     
                     download = await download_info.value
                     path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
                     await download.save_as(path)
                     
-                    f_path = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
-                    if f_path: update_google_sheets_handover(f_path)
-                    download_ok = True
+                    final = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
+                    if final: update_google_sheets_handover(final)
+                    download_sucesso = True
                     break
                 
                 except Exception:
-                    # Se deu timeout de 5s procurando o botão, aí sim tentamos reload
-                    pass
-                
-                log(f"⏳ Tentativa {i}: Arquivo não apareceu. Reload em 15s...")
-                await page.wait_for_timeout(15000)
-                await page.reload()
-                await page.wait_for_load_state("domcontentloaded")
-                
-                # Re-limpa e Re-foca após reload (CRUCIAL)
-                await limpar_popups(page)
-                try:
-                    aba = page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).first
-                    await aba.evaluate("element => element.click()")
-                except: pass
-
-            if not download_ok: log("❌ Timeout.")
-            log(f"🎉 Tempo total: {round(time.time() - start_time)}s")
+                    # Se não apareceu em 20 segundos, aí sim damos refresh
+                    log("⚠️ Arquivo ainda não pronto. Recarregando...")
+                    await page.reload()
+                    await page.wait_for_load_state("networkidle")
+                    # Re-foca a aba (importante após reload)
+                    try:
+                        await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=5000)
+                    except: pass
+            
+            if not download_sucesso: log("❌ Timeout Final.")
 
         except Exception as e:
-            log(f"❌ ERRO: {e}")
-            await page.screenshot(path="debug_error.png", full_page=True)
+            log(f"❌ Erro fatal: {e}")
+            await page.screenshot(path="debug_pending_style.png", full_page=True)
         finally:
             await browser.close()
 
