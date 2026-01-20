@@ -47,7 +47,6 @@ def update_google_sheets(csv_file_path):
 # ==============================
 async def main():
     async with async_playwright() as p:
-        # headless=True para GitHub Actions
         browser = await p.chromium.launch(headless=True) 
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
@@ -61,70 +60,85 @@ async def main():
             await page.locator('button:has-text("Login"), button:has-text("Entrar")').click()
             await page.wait_for_load_state("networkidle")
 
-            # 2. LIMPEZA DE POP-UPS (Baseado no seu log de erro 'ssc-dialog')
-            print("🧹 Removendo possíveis bloqueios de tela...")
+            # 2. LIMPEZA AGRESSIVA DE POP-UPS (Baseado no seu Log de Erro)
+            print("🧹 Removendo bloqueios de tela (ssc-dialog)...")
             await page.wait_for_timeout(5000)
-            # Remove qualquer modal ou máscara que esteja interceptando o clique via JavaScript
             await page.evaluate('''() => {
-                const overlays = document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask, .ant-modal-mask, .ant-modal-wrap');
-                overlays.forEach(el => el.remove());
+                const elements = document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask, .ant-modal-mask, .ant-modal-wrap');
+                elements.forEach(el => el.remove());
                 document.body.style.overflow = 'auto';
             }''')
             await page.keyboard.press("Escape")
 
-            # 3. FILTRO HANDEDOVER
+            # 3. NAVEGAÇÃO E FILTRO
             print("🚚 Indo para Viagens e filtrando Handedover...")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
             await page.wait_for_load_state("networkidle")
             
-            # Usando seletor de texto (mais estável que aquele XPath gigante do log)
-            handedover_tab = page.get_by_text("Handedover").first
-            await handedover_tab.wait_for(state="visible")
-            # Click forçado ignora se houver algo na frente
-            await handedover_tab.click(force=True) 
+            # Clicando no filtro Handedover com força bruta
+            await page.get_by_text("Handedover").first.click(force=True)
             
             print("📤 Solicitando Exportação...")
             await page.get_by_role("button", name="Exportar").first.click()
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(3000)
 
-            # 4. CENTRO DE TAREFAS (Conforme sua imagem do Inspetor)
+            # 4. CENTRO DE TAREFAS
             print("📂 Acessando Centro de Tarefas...")
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
             await page.wait_for_load_state("networkidle")
 
-            # Clicando no texto conforme solicitado (Regex para Português ou Inglês)
-            export_task_btn = page.get_by_text(re.compile(r"Exportar tarefa|Export task", re.IGNORECASE)).first
-            await export_task_btn.wait_for(state="visible")
-            await export_task_btn.click(force=True)
-            print("✅ Aba 'Exportar tarefa' clicada.")
+            # Clicando na aba "Exportar tarefa" usando o seletor exato da sua imagem
+            tab_exportar = page.locator('span:has-text("Exportar tarefa")').first
+            await tab_exportar.click(force=True)
+            print("✅ Aba 'Exportar tarefa' selecionada.")
 
-            # 5. DOWNLOAD DO ARQUIVO
-            print("⬇️ Aguardando botão 'Baixar' ficar pronto...")
-            await page.wait_for_timeout(5000)
+            # 5. LOOP DE DOWNLOAD (AGUARDANDO STATUS "PRONTO")
+            print("⬇️ Aguardando processamento da primeira linha...")
             
-            # Tenta clicar em Baixar (o primeiro da lista)
-            try:
-                async with page.expect_download(timeout=60000) as download_info:
-                    # Seletor baseado na sua imagem (link azul "Baixar")
-                    await page.locator('a:has-text("Baixar"), span:has-text("Baixar")').first.click()
+            download_concluido = False
+            for i in range(1, 11): # Tenta 10 vezes (aprox. 5 min)
+                # Verifica a primeira linha da tabela
+                primeira_linha = page.locator("tr").nth(1) # nth(0) é o cabeçalho
+                status_text = await primeira_linha.locator("td").nth(4).inner_text() # Coluna Status
                 
-                download = await download_info.value
-                path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
-                await download.save_as(path)
-                
-                # 6. FINALIZAÇÃO
-                final_file = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
-                if final_file:
-                    update_google_sheets(final_file)
+                if "Pronto" in status_text:
+                    print(f"✨ Status 'Pronto' detectado na tentativa {i}!")
                     
-            except Exception as e:
-                print(f"⚠️ O arquivo ainda não parece estar pronto para baixar: {e}")
+                    # Clica no link "Baixar" da primeira linha
+                    baixar_link = primeira_linha.locator('a:has-text("Baixar"), span:has-text("Baixar")')
+                    
+                    try:
+                        async with page.expect_download(timeout=60000) as download_info:
+                            await baixar_link.click(force=True)
+                        
+                        download = await download_info.value
+                        path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
+                        await download.save_as(path)
+                        
+                        # Processamento Final
+                        arquivo_final = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
+                        if arquivo_final:
+                            update_google_sheets(arquivo_final)
+                        
+                        download_concluido = True
+                        break
+                    except Exception as e:
+                        print(f"⚠️ Erro ao baixar: {e}")
+                
+                print(f"⏳ Status atual: '{status_text}'. Aguardando 30s...")
+                await page.wait_for_timeout(30000)
+                await page.reload()
+                await page.wait_for_load_state("networkidle")
+                await page.locator('span:has-text("Exportar tarefa")').first.click(force=True)
 
-            print("\n🎉 PROCESSO CONCLUÍDO COM SUCESSO!")
+            if not download_concluido:
+                print("❌ O arquivo demorou demais para ficar pronto.")
+
+            print("\n🎉 PROCESSO CONCLUÍDO!")
 
         except Exception as e:
             print(f"❌ Erro Crítico: {e}")
-            await page.screenshot(path="debug_final.png") # Tira foto para ver o que barrou
+            await page.screenshot(path="debug_erro.png")
         finally:
             await browser.close()
 
