@@ -6,7 +6,6 @@ import shutil
 import gspread
 import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
-import re
 
 DOWNLOAD_DIR = "/tmp"
 
@@ -42,46 +41,54 @@ async def main():
         page = await context.new_page()
 
         try:
+            # 1. LOGIN RÁPIDO
+            print("🔐 Login...")
             await page.goto("https://spx.shopee.com.br/")
-            await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=15000)
+            await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=10000)
             await page.locator('xpath=//*[@placeholder="Ops ID"]').fill('Ops134294')
             await page.locator('xpath=//*[@placeholder="Senha"]').fill('@Shopee123')
             await page.locator('button:has-text("Login"), button:has-text("Entrar")').click()
-            await page.wait_for_load_state("networkidle")
-
-            await page.wait_for_timeout(10000)
+            
+            # 2. LIMPEZA IMEDIATA
+            await page.wait_for_timeout(7000) # Reduzido de 10s
             await page.evaluate('''() => {
-                const dialogs = document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask, .ant-modal-mask, .ant-modal-wrap');
-                dialogs.forEach(el => el.remove());
-                document.body.style.overflow = 'auto';
+                document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask, .ant-modal-mask').forEach(el => el.remove());
             }''')
             await page.keyboard.press("Escape")
 
+            # 3. FILTRO HANDEDOVER (Ação Extra Necessária)
+            print("🚚 Filtrando Handedover...")
             await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-            await page.wait_for_timeout(12000)
+            await page.wait_for_timeout(8000) # Sincronizado com o Pending
             
+            # Clique via JS para não travar nos pop-ups
             await page.get_by_text("Handedover").first.evaluate("element => element.click()")
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(3000)
+            
+            print("📤 Exportando...")
             await page.get_by_role("button", name="Exportar").first.click()
-            await page.wait_for_timeout(12000)
+            await page.wait_for_timeout(8000) # Sincronizado com o Pending
 
+            # 4. CENTRO DE TAREFAS (Igual ao Pending)
+            print("📂 Centro de Tarefas...")
             await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
-            await page.wait_for_timeout(10000)
+            await page.wait_for_timeout(7000)
             
             try:
-                await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=5000)
+                await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=3000)
             except: pass
 
-            print("⬇️ Aguardando processamento...")
-            
-            download_sucesso = False
+            # 5. LOOP DE DOWNLOAD OTIMIZADO
+            print("⬇️ Buscando botão Baixar...")
+            download_concluido = False
             for i in range(1, 15):
                 baixar_btn = page.locator('text="Baixar"').first
                 
                 if await baixar_btn.is_visible():
-                    print(f"✨ Botão encontrado na tentativa {i}!")
+                    print(f"✨ Pronto! Iniciando download na tentativa {i}...")
                     try:
                         async with page.expect_download(timeout=60000) as download_info:
+                            # MESMA LÓGICA DO PENDING: Clique via evaluate
                             await baixar_btn.evaluate("element => element.click()")
                         
                         download = await download_info.value
@@ -90,22 +97,23 @@ async def main():
                         
                         final = rename_downloaded_file_handover(DOWNLOAD_DIR, path)
                         if final: update_google_sheets_handover(final)
-                        download_sucesso = True
+                        download_concluido = True
                         break
                     except Exception: pass
                 
-                await page.wait_for_timeout(15000)
+                # Se não achou, espera menos tempo para tentar de novo
+                print(f"⏳ Tentativa {i}: Ainda processando. Reload em 10s...")
+                await page.wait_for_timeout(10000) # Reduzido de 20s/30s
                 await page.reload()
                 await page.wait_for_load_state("domcontentloaded")
                 try:
-                    await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=5000)
+                    await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True, timeout=3000)
                 except: pass
 
-            if not download_sucesso: print("❌ Timeout.")
+            if not download_concluido: print("❌ Timeout.")
 
         except Exception as e:
             print(f"❌ Erro: {e}")
-            await page.screenshot(path="debug.png", full_page=True)
         finally:
             await browser.close()
 
