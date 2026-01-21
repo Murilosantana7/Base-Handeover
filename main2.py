@@ -8,7 +8,7 @@ import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 
-# --- CONFIGURAÇÃO PARA WINDOWS/IDLE ---
+# --- CONFIGURAÇÃO ---
 BASE_DIR = os.getcwd()
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads_shopee")
 
@@ -16,15 +16,15 @@ DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads_shopee")
 LISTA_DE_BASES = [
     {
         "filtro": "Handedover", 
-        "aba_sheets": "Base Handedover",  # <--- NOME EXATO CONFIRMADO
+        "aba_sheets": "Base Handedover", # Nome corrigido conforme seu pedido
         "prefixo": "PROD",
-        "xpath": "/html/body/div/div/div[2]/div[2]/div/div/div/div[1]/div[1]/div[1]/div/div[1]/div/div/div/div/div[3]/span"
+        "usar_texto": True # Vamos usar texto, o XPath falhou
     },
     {
         "filtro": "Expedidos",  
-        "aba_sheets": "Base Expedidos",  
+        "aba_sheets": "Base Ended",  # <--- AJUSTE AQUI: Mudei para "Base Ended" que vi no seu print. Se for outra, me avise.
         "prefixo": "EXP",
-        "xpath": None 
+        "usar_texto": True
     } 
 ]
 
@@ -36,10 +36,9 @@ def rename_file(download_dir, download_path, prefixo):
         current_hour = datetime.now().strftime("%H")
         new_file_name = f"{prefixo}-{current_hour}.csv"
         new_file_path = os.path.join(download_dir, new_file_name)
-        
         if os.path.exists(new_file_path): os.remove(new_file_path)
         shutil.move(download_path, new_file_path)
-        log(f"✅ Arquivo salvo como: {new_file_name}")
+        log(f"✅ Arquivo salvo: {new_file_name}")
         return new_file_path
     except Exception as e:
         log(f"❌ Erro ao renomear: {e}")
@@ -59,13 +58,13 @@ def update_google_sheets(csv_file_path, nome_aba):
         try:
             worksheet = sheet.worksheet(nome_aba)
         except:
-            log(f"⚠️ Aba '{nome_aba}' não encontrada na planilha.")
+            log(f"⚠️ Aba '{nome_aba}' não existe na planilha! Verifique o nome.")
             return
 
         df = pd.read_csv(csv_file_path).fillna("")
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-        log(f"✅ Aba '{nome_aba}' atualizada com sucesso!")
+        log(f"✅ Aba '{nome_aba}' atualizada!")
     except Exception as e:
         log(f"❌ Erro Sheets: {e}")
 
@@ -73,37 +72,43 @@ async def processar_exportacao(page, config):
     filtro = config["filtro"]
     aba = config["aba_sheets"]
     prefixo = config["prefixo"]
-    xpath_filtro = config["xpath"]
 
-    log(f"🚀 --- PROCESSANDO BASE: {filtro.upper()} ---")
+    log(f"🚀 --- BASE: {filtro.upper()} ---")
     
     log("🚚 Acessando Viagens...")
     await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-    await page.wait_for_timeout(5000)
+    
+    # AUMENTEI AQUI: Espera 10 segundos para garantir que carregou
+    await page.wait_for_timeout(10000)
 
-    # Limpeza de pop-ups do site
+    # Limpeza de pop-ups
     await page.evaluate('''() => {
         document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask').forEach(el => el.remove());
     }''')
 
     log(f"🔍 Selecionando filtro '{filtro}'...")
     try:
-        if xpath_filtro:
-            seletor = page.locator(f"xpath={xpath_filtro}")
-        elif filtro == "Expedidos":
+        # Estratégia Híbrida mais segura
+        if filtro == "Expedidos":
             seletor = page.get_by_text("Expedidos").or_(page.get_by_text("Shipped")).first
         else:
-            seletor = page.get_by_text(filtro).first
+            # Tenta clicar pelo texto exato "Handedover"
+            seletor = page.get_by_text(filtro, exact=True).first
             
+        await seletor.wait_for(state="visible", timeout=10000) # Espera o botão existir
         await seletor.highlight()
         await seletor.evaluate("element => element.click()")
     except Exception as e:
-        log(f"⚠️ Erro filtro: {e}")
-        return
+        log(f"⚠️ Erro ao clicar no filtro (tentando forçar via JS): {e}")
+        # Plano B: Tenta encontrar qualquer elemento que contenha o texto
+        try:
+            await page.locator(f"text={filtro}").first.evaluate("element => element.click()")
+        except:
+            return
 
     await page.wait_for_timeout(3000)
 
-    log("📤 Clicando em Exportar...")
+    log("📤 Exportando...")
     try:
         btn_export = page.get_by_role("button", name="Exportar").first
         await btn_export.highlight()
@@ -114,7 +119,7 @@ async def processar_exportacao(page, config):
 
     await page.wait_for_timeout(5000)
 
-    log("📂 Indo para Centro de Tarefas...")
+    log("📂 Centro de Tarefas...")
     await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
     
     try:
@@ -122,12 +127,11 @@ async def processar_exportacao(page, config):
         await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True)
     except: pass
 
-    log(f"⬇️ Aguardando botão 'Baixar' (Paciência de 60s)...")
+    log(f"⬇️ Aguardando botão 'Baixar'...")
     download_sucesso = False
     
     for i in range(1, 10):
         try:
-            # Espera até 60 segundos pelo botão
             await page.wait_for_selector("text=Baixar", timeout=60000)
             
             log(f"⚡ Baixando...")
@@ -148,7 +152,7 @@ async def processar_exportacao(page, config):
             break
         
         except Exception:
-            log(f"⏳ Tentativa {i}: Tempo esgotado (60s). Tentando recarregar página...")
+            log(f"⏳ Recarregando...")
             await page.reload()
             await page.wait_for_load_state("networkidle")
             try:
@@ -163,7 +167,6 @@ async def main():
     
     async with async_playwright() as p:
         log("🚀 Abrindo navegador...")
-        
         browser = await p.chromium.launch(
             headless=False, 
             slow_mo=50,
