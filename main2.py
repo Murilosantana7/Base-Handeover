@@ -12,19 +12,19 @@ import time
 BASE_DIR = os.getcwd()
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads_shopee")
 
-# Configuração das Bases
 LISTA_DE_BASES = [
     {
-        "filtro": "Handedover", 
-        "aba_sheets": "Base Handedover", # Nome corrigido conforme seu pedido
-        "prefixo": "PROD",
-        "usar_texto": True # Vamos usar texto, o XPath falhou
+        "nome_log": "Handedover", 
+        "termos_busca": ["Handedover"], 
+        "aba_sheets": "Base Handedover", # Mantido conforme sua instrução
+        "prefixo": "PROD"
     },
     {
-        "filtro": "Expedidos",  
-        "aba_sheets": "Base Ended",  # <--- AJUSTE AQUI: Mudei para "Base Ended" que vi no seu print. Se for outra, me avise.
-        "prefixo": "EXP",
-        "usar_texto": True
+        "nome_log": "Expedidos",  
+        # Procura por "Expedidos" OU "Shipped" (caso esteja em inglês)
+        "termos_busca": ["Expedidos", "Shipped", "Enviado"], 
+        "aba_sheets": "Base Expedidos",  # <--- VOLTEI PARA O ORIGINAL. Crie essa aba na planilha!
+        "prefixo": "EXP"
     } 
 ]
 
@@ -58,7 +58,7 @@ def update_google_sheets(csv_file_path, nome_aba):
         try:
             worksheet = sheet.worksheet(nome_aba)
         except:
-            log(f"⚠️ Aba '{nome_aba}' não existe na planilha! Verifique o nome.")
+            log(f"⚠️ A ABA '{nome_aba}' NÃO EXISTE NA PLANILHA. O script baixou o CSV, mas não atualizou o Sheets.")
             return
 
         df = pd.read_csv(csv_file_path).fillna("")
@@ -69,57 +69,57 @@ def update_google_sheets(csv_file_path, nome_aba):
         log(f"❌ Erro Sheets: {e}")
 
 async def processar_exportacao(page, config):
-    filtro = config["filtro"]
+    nome = config["nome_log"]
+    termos = config["termos_busca"]
     aba = config["aba_sheets"]
     prefixo = config["prefixo"]
 
-    log(f"🚀 --- BASE: {filtro.upper()} ---")
+    log(f"🚀 --- BASE: {nome.upper()} ---")
     
     log("🚚 Acessando Viagens...")
     await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
-    
-    # AUMENTEI AQUI: Espera 10 segundos para garantir que carregou
-    await page.wait_for_timeout(10000)
+    await page.wait_for_timeout(8000)
 
     # Limpeza de pop-ups
     await page.evaluate('''() => {
         document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask').forEach(el => el.remove());
     }''')
 
-    log(f"🔍 Selecionando filtro '{filtro}'...")
-    try:
-        # Estratégia Híbrida mais segura
-        if filtro == "Expedidos":
-            seletor = page.get_by_text("Expedidos").or_(page.get_by_text("Shipped")).first
-        else:
-            # Tenta clicar pelo texto exato "Handedover"
-            seletor = page.get_by_text(filtro, exact=True).first
-            
-        await seletor.wait_for(state="visible", timeout=10000) # Espera o botão existir
-        await seletor.highlight()
-        await seletor.evaluate("element => element.click()")
-    except Exception as e:
-        log(f"⚠️ Erro ao clicar no filtro (tentando forçar via JS): {e}")
-        # Plano B: Tenta encontrar qualquer elemento que contenha o texto
+    log(f"🔍 Procurando filtro '{nome}'...")
+    filtro_encontrado = False
+    
+    # Tenta cada termo da lista até clicar
+    for termo in termos:
         try:
-            await page.locator(f"text={filtro}").first.evaluate("element => element.click()")
+            # exact=False É A CORREÇÃO: Encontra "Expedidos (50)" buscando só "Expedidos"
+            seletor = page.get_by_text(termo, exact=False).first
+            if await seletor.is_visible():
+                await seletor.highlight()
+                log(f"   -> Botão encontrado: '{termo}'")
+                await seletor.evaluate("element => element.click()")
+                filtro_encontrado = True
+                break
         except:
-            return
+            continue
+            
+    if not filtro_encontrado:
+        log(f"⚠️ AVISO: Não achei nenhum botão com os textos: {termos}")
+        return
 
     await page.wait_for_timeout(3000)
 
-    log("📤 Exportando...")
+    log("📤 Clicando Exportar...")
     try:
         btn_export = page.get_by_role("button", name="Exportar").first
         await btn_export.highlight()
         await btn_export.evaluate("element => element.click()")
     except:
-        log("⚠️ Falha Exportar.")
+        log("⚠️ Falha ao clicar em Exportar.")
         return
 
     await page.wait_for_timeout(5000)
 
-    log("📂 Centro de Tarefas...")
+    log("📂 Indo para Centro de Tarefas...")
     await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
     
     try:
@@ -160,7 +160,7 @@ async def processar_exportacao(page, config):
             except: pass
     
     if not download_sucesso:
-        log(f"❌ Timeout base {filtro}.")
+        log(f"❌ Timeout base {nome}.")
 
 async def main():
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
