@@ -8,22 +8,23 @@ import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 
-DOWNLOAD_DIR = "/tmp"  # No Windows, pode ser necessário ajustar (ex: "C:\\Users\\Murilo\\Downloads")
+# --- CONFIGURAÇÃO PARA WINDOWS/IDLE ---
+BASE_DIR = os.getcwd()
+DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads_shopee")
 
 # Configuração das Bases
 LISTA_DE_BASES = [
     {
         "filtro": "Handedover", 
-        "aba_sheets": "Base Handedover", 
+        "aba_sheets": "Base Handedover",  # <--- NOME EXATO CONFIRMADO
         "prefixo": "PROD",
-        # XPath específico que você forneceu
         "xpath": "/html/body/div/div/div[2]/div[2]/div/div/div/div[1]/div[1]/div[1]/div/div[1]/div/div/div/div/div[3]/span"
     },
     {
         "filtro": "Expedidos",  
         "aba_sheets": "Base Expedidos",  
         "prefixo": "EXP",
-        "xpath": None # Para Expedidos usamos o texto, pois não temos o XPath ainda
+        "xpath": None 
     } 
 ]
 
@@ -35,9 +36,10 @@ def rename_file(download_dir, download_path, prefixo):
         current_hour = datetime.now().strftime("%H")
         new_file_name = f"{prefixo}-{current_hour}.csv"
         new_file_path = os.path.join(download_dir, new_file_name)
+        
         if os.path.exists(new_file_path): os.remove(new_file_path)
         shutil.move(download_path, new_file_path)
-        log(f"✅ Arquivo salvo: {new_file_name}")
+        log(f"✅ Arquivo salvo como: {new_file_name}")
         return new_file_path
     except Exception as e:
         log(f"❌ Erro ao renomear: {e}")
@@ -45,6 +47,10 @@ def rename_file(download_dir, download_path, prefixo):
 
 def update_google_sheets(csv_file_path, nome_aba):
     try:
+        if not os.path.exists("hxh.json"):
+            log("⚠️ ERRO: hxh.json não encontrado!")
+            return
+
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name("hxh.json", scope)
         client = gspread.authorize(creds)
@@ -53,15 +59,15 @@ def update_google_sheets(csv_file_path, nome_aba):
         try:
             worksheet = sheet.worksheet(nome_aba)
         except:
-            log(f"⚠️ Aba '{nome_aba}' não encontrada.")
+            log(f"⚠️ Aba '{nome_aba}' não encontrada na planilha.")
             return
 
         df = pd.read_csv(csv_file_path).fillna("")
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-        log(f"✅ Aba '{nome_aba}' atualizada!")
+        log(f"✅ Aba '{nome_aba}' atualizada com sucesso!")
     except Exception as e:
-        log(f"❌ Erro no Sheets ({nome_aba}): {e}")
+        log(f"❌ Erro Sheets: {e}")
 
 async def processar_exportacao(page, config):
     filtro = config["filtro"]
@@ -69,51 +75,45 @@ async def processar_exportacao(page, config):
     prefixo = config["prefixo"]
     xpath_filtro = config["xpath"]
 
-    log(f"🚀 --- INICIANDO PROCESSO: {filtro.upper()} ---")
+    log(f"🚀 --- PROCESSANDO BASE: {filtro.upper()} ---")
     
-    # 1. IR PARA VIAGENS
-    log("🚚 Indo para Viagens...")
+    log("🚚 Acessando Viagens...")
     await page.goto("https://spx.shopee.com.br/#/hubLinehaulTrips/trip")
     await page.wait_for_timeout(5000)
 
-    # Limpeza preventiva
+    # Limpeza de pop-ups do site
     await page.evaluate('''() => {
         document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask').forEach(el => el.remove());
     }''')
 
-    # 2. APLICAR FILTRO
-    log(f"🔍 Clicando no filtro '{filtro}'...")
+    log(f"🔍 Selecionando filtro '{filtro}'...")
     try:
         if xpath_filtro:
-            # Se temos o XPath exato (Handedover), usamos ele
             seletor = page.locator(f"xpath={xpath_filtro}")
         elif filtro == "Expedidos":
-            # Para Expedidos, mantemos a busca por texto
             seletor = page.get_by_text("Expedidos").or_(page.get_by_text("Shipped")).first
         else:
             seletor = page.get_by_text(filtro).first
             
-        await seletor.highlight() # Mostra visualmente onde vai clicar
+        await seletor.highlight()
         await seletor.evaluate("element => element.click()")
     except Exception as e:
-        log(f"⚠️ Erro ao clicar no filtro '{filtro}': {e}")
+        log(f"⚠️ Erro filtro: {e}")
         return
 
     await page.wait_for_timeout(3000)
 
-    # 3. EXPORTAR
-    log("📤 Solicitando Exportação...")
+    log("📤 Clicando em Exportar...")
     try:
         btn_export = page.get_by_role("button", name="Exportar").first
         await btn_export.highlight()
         await btn_export.evaluate("element => element.click()")
     except:
-        log("⚠️ Botão exportar falhou.")
+        log("⚠️ Falha Exportar.")
         return
 
     await page.wait_for_timeout(5000)
 
-    # 4. CENTRO DE TAREFAS
     log("📂 Indo para Centro de Tarefas...")
     await page.goto("https://spx.shopee.com.br/#/taskCenter/exportTaskCenter")
     
@@ -122,8 +122,7 @@ async def processar_exportacao(page, config):
         await page.get_by_text("Exportar tarefa").or_(page.get_by_text("Export Task")).click(force=True)
     except: pass
 
-    # 5. DOWNLOAD (Paciência de 60 segundos)
-    log(f"⬇️ Aguardando arquivo '{filtro}' ficar pronto...")
+    log(f"⬇️ Aguardando botão 'Baixar' (Paciência de 60s)...")
     download_sucesso = False
     
     for i in range(1, 10):
@@ -131,7 +130,7 @@ async def processar_exportacao(page, config):
             # Espera até 60 segundos pelo botão
             await page.wait_for_selector("text=Baixar", timeout=60000)
             
-            log(f"⚡ Botão Baixar apareceu! Clicando...")
+            log(f"⚡ Baixando...")
             async with page.expect_download(timeout=60000) as download_info:
                 btn_baixar = page.locator("text=Baixar").first
                 await btn_baixar.highlight()
@@ -149,7 +148,7 @@ async def processar_exportacao(page, config):
             break
         
         except Exception:
-            log(f"⏳ Tentativa {i}: Passou 1 minuto e não ficou pronto. Dando Reload...")
+            log(f"⏳ Tentativa {i}: Tempo esgotado (60s). Tentando recarregar página...")
             await page.reload()
             await page.wait_for_load_state("networkidle")
             try:
@@ -157,14 +156,29 @@ async def processar_exportacao(page, config):
             except: pass
     
     if not download_sucesso:
-        log(f"❌ Timeout ao baixar {filtro}.")
+        log(f"❌ Timeout base {filtro}.")
 
 async def main():
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    
     async with async_playwright() as p:
-        # headless=False para ver o navegador
-        browser = await p.chromium.launch(headless=False, slow_mo=50) 
-        context = await browser.new_context(accept_downloads=True, viewport={'width': 1366, 'height': 768})
+        log("🚀 Abrindo navegador...")
+        
+        browser = await p.chromium.launch(
+            headless=False, 
+            slow_mo=50,
+            args=["--disable-infobars", "--disable-translate", "--disable-notifications", "--no-first-run"]
+        )
+        
+        context = await browser.new_context(
+            accept_downloads=True, 
+            viewport={'width': 1366, 'height': 768},
+            locale='pt-BR',
+            timezone_id='America/Sao_Paulo',
+            permissions=['geolocation'],
+            geolocation={'latitude': -23.5505, 'longitude': -46.6333}
+        )
+        
         page = await context.new_page()
 
         try:
@@ -176,23 +190,23 @@ async def main():
             await page.locator('xpath=/html/body/div[1]/div/div[2]/div/div/div[1]/div[3]/form/div/div/button').click()
             await page.wait_for_load_state("networkidle", timeout=40000)
 
-            log("🧹 Limpando pop-ups...")
-            await page.wait_for_timeout(5000)
+            log("🧹 Limpando avisos...")
+            await page.wait_for_timeout(3000)
             try: await page.keyboard.press("Escape")
             except: pass
+            
             await page.evaluate('''() => {
                 document.querySelectorAll('.ssc-dialog-wrapper, .ssc-dialog-mask').forEach(el => el.remove());
             }''')
 
-            # Processa as duas bases
             for config in LISTA_DE_BASES:
                 await processar_exportacao(page, config)
 
-            log("🎉 TODOS OS PROCESSOS CONCLUÍDOS!")
+            log("🎉 FINALIZADO!")
             await page.wait_for_timeout(5000)
 
         except Exception as e:
-            log(f"❌ Erro Geral: {e}")
+            log(f"❌ Erro Fatal: {e}")
         finally:
             await browser.close()
 
