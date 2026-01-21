@@ -12,11 +12,9 @@ import time
 BASE_DIR = os.getcwd()
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads_shopee")
 
-# DEIXEI APENAS 1 BASE NA LISTA PARA ELE NÃO VOLTAR
 LISTA_DE_BASES = [
     {
         "nome_log": "Expedidos (Handedover)", 
-        # Busca o botão "Expedidos" (que é o do meio no seu print)
         "termos_busca": ["Expedidos"], 
         "aba_sheets": "Base Handedover", 
         "prefixo": "PROD"
@@ -84,7 +82,7 @@ async def processar_exportacao(page, config):
     log(f"🔍 Procurando aba '{termos[0]}'...")
     filtro_clicado = False
 
-    # 2. CLIQUE NO FILTRO "EXPEDIDOS"
+    # 2. CLIQUE NO FILTRO
     for termo in termos:
         try:
             # Procura pela aba "Expedidos"
@@ -102,17 +100,18 @@ async def processar_exportacao(page, config):
 
     if not filtro_clicado:
         log(f"⚠️ ALERTA: Não achei a aba {nome}.")
-        return # Para se não achar o filtro
+        return
     
     log("⏳ Aguardando tabela atualizar (5s)...")
     await page.wait_for_timeout(5000)
 
-    # 3. EXPORTAR
+    # 3. EXPORTAR (Via JS para garantir)
     log("📤 Exportando...")
     try:
         btn_export = page.get_by_role("button", name="Exportar").first
         await btn_export.highlight()
-        await btn_export.click(force=True)
+        # MUDANÇA: Usando evaluate aqui também
+        await btn_export.evaluate("element => element.click()")
     except:
         log("⚠️ Falha Exportar.")
         return
@@ -134,11 +133,16 @@ async def processar_exportacao(page, config):
         try:
             await page.wait_for_selector("text=Baixar", timeout=60000)
             
-            log(f"⚡ Baixando...")
+            log(f"⚡ Baixando (Tentativa {i})...")
             async with page.expect_download(timeout=60000) as download_info:
                 btn_baixar = page.locator("text=Baixar").first
                 await btn_baixar.highlight()
-                await btn_baixar.click(force=True)
+                
+                # --- CORREÇÃO PRINCIPAL AQUI ---
+                # Troquei .click(force=True) por .evaluate()
+                # Isso força o clique via JavaScript, impossível de errar.
+                await btn_baixar.evaluate("element => element.click()")
+                # -------------------------------
             
             download = await download_info.value
             path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
@@ -152,7 +156,7 @@ async def processar_exportacao(page, config):
             break
         
         except Exception:
-            log(f"⏳ Recarregando...")
+            log(f"⏳ Falha no download. Recarregando página...")
             try:
                 await page.reload()
                 await page.wait_for_load_state("networkidle")
@@ -221,7 +225,6 @@ async def main():
                 await processar_exportacao(page, config)
 
             log("🎉 FINALIZADO COM SUCESSO!")
-            # Fecha o navegador logo após terminar
             await browser.close()
 
         except Exception as e:
